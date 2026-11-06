@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "upload",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "R2_ACCOUNT_ID": "750b0664bc41c8b75d5ebfda30a0584d",
+    "R2_BUCKET_NAME": "vntez-bucket"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
