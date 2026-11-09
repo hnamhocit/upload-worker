@@ -164,13 +164,13 @@ app.post('/api/upload/single', async (c) => {
 });
 
 // 2. File lớn: Khởi tạo phiên Multipart Upload (>= 10MB)
-app.post('/api/upload/multipart', async (c) => {
-  const body = await c.req.json<{
+const handleMultipartStart = async (c: any) => {
+  const body = (await c.req.json().catch(() => null)) as {
     filename?: string;
     type?: string;
     userId?: string;
     folder?: string;
-  }>().catch(() => null);
+  } | null;
 
   if (!body || !body.filename || !body.type) {
     return c.json({ error: 'Missing required fields: filename and type' }, 400);
@@ -192,9 +192,41 @@ app.post('/api/upload/multipart', async (c) => {
     uploadId: res.UploadId,
     key,
   });
+};
+
+app.post('/api/upload/multipart', handleMultipartStart);
+app.post('/api/upload/multipart/start', handleMultipartStart);
+
+// 3a. Ký URL cho từng mảnh đơn lẻ (OpenAPI spec: POST /api/upload/multipart/part)
+app.post('/api/upload/multipart/part', async (c) => {
+  const body = await c.req.json<{
+    key?: string;
+    uploadId?: string;
+    partNumber?: number;
+  }>().catch(() => null);
+
+  if (!body || !body.key || !body.uploadId || body.partNumber === undefined) {
+    return c.json({ error: 'Missing key, uploadId, or partNumber' }, 400);
+  }
+
+  const s3 = getR2Client(c.env);
+  const partNumber = Number(body.partNumber);
+  const command = new UploadPartCommand({
+    Bucket: c.env.R2_BUCKET_NAME,
+    Key: body.key,
+    UploadId: body.uploadId,
+    PartNumber: partNumber,
+  });
+
+  const url = await getSignedUrl(s3, command, { expiresIn: 300 });
+
+  return c.json({
+    url,
+    partNumber,
+  });
 });
 
-// 3. Ký URL cho từng mảnh (Part) hoặc danh sách mảnh
+// 3b. Ký URL cho danh sách nhiều mảnh cùng lúc (Batch sign)
 app.post('/api/upload/multipart/batch-sign-parts', async (c) => {
   const body = await c.req.json<{
     key?: string;
@@ -288,6 +320,34 @@ app.post('/api/upload/multipart/abort', async (c) => {
 });
 
 // 6. Cấp Presigned GET URL để tải hoặc xem trước file (khi bucket private)
+// 6a. GET /api/upload/download-url (OpenAPI Spec)
+app.get('/api/upload/download-url', async (c) => {
+  const key = c.req.query('key');
+  const expiresIn = c.req.query('expiresIn') ? Number(c.req.query('expiresIn')) : 300;
+
+  if (!key) {
+    return c.json({ error: 'Missing key parameter' }, 400);
+  }
+
+  const s3 = getR2Client(c.env);
+  const command = new GetObjectCommand({
+    Bucket: c.env.R2_BUCKET_NAME,
+    Key: key,
+  });
+
+  const finalExpiresIn = Math.min(expiresIn || 300, 604800);
+  const downloadUrl = await getSignedUrl(s3, command, {
+    expiresIn: finalExpiresIn,
+  });
+
+  return c.json({
+    downloadUrl,
+    expiresIn: finalExpiresIn,
+    key,
+  });
+});
+
+// 6b. POST /api/upload/signed-download-url (Body Payload)
 app.post('/api/upload/signed-download-url', async (c) => {
   const body = await c.req.json<{ key?: string; expiresIn?: number }>().catch(() => null);
 
