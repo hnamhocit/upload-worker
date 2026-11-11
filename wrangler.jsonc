@@ -8,8 +8,17 @@
   ],
   "vars": {
     "R2_ACCOUNT_ID": "750b0664bc41c8b75d5ebfda30a0584d",
-    "R2_BUCKET_NAME": "vntez-bucket"
+    "R2_BUCKET_NAME": "vntez-bucket",
+    "JWT_SECRET": "your-jwt-secret-key",
+    "PUBLIC_R2_DOMAIN": "https://r2.yourdomain.com"
   },
+  "r2_buckets": [
+    {
+      "binding": "MY_BUCKET",
+      "bucket_name": "vntez-bucket",
+      "preview_bucket_name": "vntez-bucket-preview"
+    }
+  ],
   "observability": {
     "enabled": true
   }
