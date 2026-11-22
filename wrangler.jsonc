@@ -7,10 +7,9 @@
     "nodejs_compat"
   ],
   "vars": {
+    "IAM_ISSUER": "https://iam.hnamhocit.workers.dev",
     "R2_ACCOUNT_ID": "750b0664bc41c8b75d5ebfda30a0584d",
-    "R2_BUCKET_NAME": "vntez-bucket",
-    "JWT_SECRET": "your-jwt-secret-key",
-    "PUBLIC_R2_DOMAIN": "https://r2.yourdomain.com"
+    "R2_BUCKET_NAME": "vntez-bucket"
   },
   "r2_buckets": [
     {
@@ -21,5 +20,39 @@
   ],
   "observability": {
     "enabled": true
-  }
+  },
+  "ratelimits": [
+    {
+      "name": "UPLOAD_APP_LIMIT",
+      "namespace_id": "1001",
+      "simple": {
+        "limit": 600,
+        "period": 60
+      }
+    },
+    {
+      "name": "UPLOAD_CREATE_LIMIT",
+      "namespace_id": "1002",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    },
+    {
+      "name": "UPLOAD_PART_LIMIT",
+      "namespace_id": "1003",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    },
+    {
+      "name": "UPLOAD_MANAGE_LIMIT",
+      "namespace_id": "1004",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ]
 }

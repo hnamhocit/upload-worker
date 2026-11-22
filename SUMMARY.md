@@ -1,3 +1,5 @@
+> Phiên bản cũ. Dùng [hướng dẫn tích hợp Worker hiện tại](README.md).
+
 # Upload Worker - Implementation Summary
 
 ## ✅ Completed Components

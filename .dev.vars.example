@@ -1,0 +1,7 @@
+# Copy to .dev.vars for local Wrangler development.
+IAM_ISSUER=https://iam.hnamhocit.workers.dev
+# Configure the RS256 public key as a PEM (preferred), or set JWT_SECRET for HS256.
+# IAM_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
+# JWT_SECRET=
+# Configure only when this is a public endpoint serving the bound R2 bucket.
+# PUBLIC_R2_DOMAIN=https://cdn.example.com

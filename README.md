@@ -1,217 +1,27 @@
-# Upload Worker (Cloudflare Workers + R2)
+# Upload Worker
 
-Microservice chạy trên Cloudflare Workers sử dụng **Hono** và **AWS S3 SDK** để sinh S3 Presigned URLs và điều phối upload file trực tiếp lên Cloudflare R2 (cả Single PUT lẫn Multipart Upload cho file lớn).
+Dùng access token IAM với `Authorization: Bearer <token>`. Worker lấy `app_id` và `sub` từ token đã xác thực và lưu file dưới prefix tương ứng. Token phải có `aud` bằng `app_id`. Mỗi app dùng token do IAM cấp cho app đó.
 
-- **Production Worker URL**: `https://upload.hnamhocit.workers.dev`
-- **Target R2 Bucket**: `vntez-bucket`
+## Cấu hình
 
----
+Đặt `IAM_ISSUER` khớp claim `iss` của IAM. Với IAM RS256, đặt `IAM_JWT_PUBLIC_KEY` thành PEM public key. Với IAM HS256, đặt `JWT_SECRET` bằng secret ký của IAM thông qua Wrangler secret. Mỗi môi trường dùng một chế độ xác thực. Khi dùng PEM có thể nhập giá trị nhiều dòng hoặc chuỗi chứa ký tự xuống dòng escaped. Đặt `PUBLIC_R2_DOMAIN` nếu bucket có domain public.
 
-## 🚀 Tính năng chính & Điểm chuẩn hóa
+## Tích hợp Flutter và Web
 
-1. **Chuẩn hóa cấu hình & Bí mật (Secrets)**:
-   - Tự động fallback linh hoạt giữa các quy ước đặt tên: `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` và `R2_ACCESS_KEY` / `R2_ACCESS_SECRET`.
-   - Lưu trữ bí mật bảo mật trên Cloudflare qua `wrangler secret bulk`, không lộ credentials trong `wrangler.jsonc` hay source code.
-2. **Khắc phục tương thích workerd runtime (`DOMParser / Node`)**:
-   - Tích hợp `@xmldom/xmldom` polyfill để giải quyết triệt để lỗi `DOMParser is not defined` và `Node is not defined` khi AWS S3 SDK giải mã XML response (như `InitiateMultipartUploadResult`, `CompleteMultipartUploadResult`) trong môi trường Cloudflare Workers.
-3. **Bảo mật đường dẫn lưu trữ**:
-   - Tự động làm sạch tên file (`sanitizedFilename`), loại bỏ ký tự lạ và path traversal (`../`, `\`...).
-   - Hỗ trợ phân quyền folder theo user ID an toàn: `uploads/{userId}/{uuid}-{filename}`.
-4. **CORS toàn diện**:
-   - Hỗ trợ Uppy, browser fetch, Axios từ mọi domain với expose headers (`ETag`, `Content-Length`) cần thiết cho S3 Multipart Upload.
-5. **Cấp Presigned GET URL**:
-   - Bổ sung endpoint `/api/upload/signed-download-url` cho phép tạo signed URL tải/xem trước dữ liệu bảo mật khi R2 bucket không bật public dev-url.
+Contract ở [openapi.json](openapi.json). SDK nhận access token từ callback của app, gửi binary trực tiếp với `X-Filename`, và chuyển sang multipart khi vượt 5 MiB. Khi dùng `FormData` với trình duyệt, đặt trường `file` và để trình duyệt tự tạo `Content-Type` có boundary.
 
----
+| Hành động | API |
+|---|---|
+| File đến 5 MiB | `POST /upload/single` |
+| Tạo upload đến 100 MiB | `POST /upload/multipart/create` với `filename`, `contentType`, `size` |
+| Truyền part | `PUT /upload/multipart/upload-part?uploadId=…&key=…&partNumber=…` với body binary |
+| Hoàn tất | `POST /upload/multipart/complete` với `uploadId`, `key`, `parts: [{partNumber, etag}]` |
+| Hủy | `POST /upload/multipart/abort` với `uploadId`, `key` |
+| Metadata / xóa | `GET /upload/info?key=…` / `DELETE /upload?key=…` |
+| Health check | `GET /health` |
 
-## 📡 API Reference
+Đánh số part từ 1. Part có kích thước 5 MiB, riêng part cuối có thể nhỏ hơn. Giữ nguyên `etag` trong JSON trả về. Để resume, lưu `key`, `uploadId` và các part đã xác nhận cùng file gốc. Retry part với cùng số thứ tự và chỉ complete sau khi tất cả part thành công. Các multipart session tạo trước khi nâng cấp có thể cần upload lại nếu dùng part lớn hơn 5 MiB.
 
-### 1. Healthcheck
-- **`GET /`** hoặc **`GET /health`**
-- Response:
-```json
-{
-  "status": "ok",
-  "service": "edge-upload-worker",
-  "timestamp": "2026-10-29T04:09:02.402Z"
-}
-```
+Rate limit tại mỗi Cloudflare location. Mốc khởi điểm mỗi phút là 600 request/app, thêm 30 create/single, 120 upload part và 120 quản lý cho mỗi user trong app. `429` trả `Retry-After` và Web có thể đọc header. `url` chỉ có khi cấu hình domain public. Nếu cần private download, cần thêm API riêng.
 
----
-
-### 2. File nhỏ: Cấp Presigned PUT URL (< 10MB)
-- **Endpoint**: `POST /api/upload/single`
-- **Body**:
-```json
-{
-  "filename": "avatar.png",
-  "type": "image/png",
-  "userId": "user_123",
-  "folder": "uploads"
-}
-```
-- **Response**:
-```json
-{
-  "url": "https://vntez-bucket.<account_id>.r2.cloudflarestorage.com/uploads/user_123/uuid-avatar.png?X-Amz-...",
-  "method": "PUT",
-  "key": "uploads/user_123/uuid-avatar.png",
-  "location": "https://vntez-bucket.r2.dev/uploads/user_123/uuid-avatar.png"
-}
-```
-
-Client upload trực tiếp:
-```bash
-curl -X PUT --data-binary @avatar.png -H "Content-Type: image/png" "<url>"
-```
-
----
-
-### 3. File lớn: Khởi tạo Multipart Upload (>= 10MB)
-- **Endpoint**: `POST /api/upload/multipart`
-- **Body**:
-```json
-{
-  "filename": "large-video.mp4",
-  "type": "video/mp4",
-  "userId": "user_123"
-}
-```
-- **Response**:
-```json
-{
-  "uploadId": "string",
-  "key": "uploads/user_123/uuid-large-video.mp4"
-}
-```
-
----
-
-### 4. Ký URL danh sách Part
-- **Endpoint**: `POST /api/upload/multipart/batch-sign-parts`
-- **Body**:
-```json
-{
-  "key": "uploads/user_123/uuid-large-video.mp4",
-  "uploadId": "string",
-  "partNumbers": [1, 2, 3]
-}
-```
-- **Response**:
-```json
-{
-  "presignedUrls": {
-    "1": "https://...",
-    "2": "https://...",
-    "3": "https://..."
-  }
-}
-```
-
----
-
-### 5. Hoàn tất Multipart Upload
-- **Endpoint**: `POST /api/upload/multipart/complete`
-- **Body**:
-```json
-{
-  "key": "uploads/user_123/uuid-large-video.mp4",
-  "uploadId": "string",
-  "parts": [
-    { "PartNumber": 1, "ETag": "5f363e0e58a95f06cbe9bbc662c5dfb6" },
-    { "PartNumber": 2, "ETag": "e1a903260c679a6136d80ff44e112461" }
-  ]
-}
-```
-- **Response**:
-```json
-{
-  "success": true,
-  "key": "uploads/user_123/uuid-large-video.mp4",
-  "location": "https://vntez-bucket.r2.dev/uploads/user_123/uuid-large-video.mp4"
-}
-```
-
----
-
-### 6. Hủy Multipart Upload dở dang
-- **Endpoint**: `POST /api/upload/multipart/abort`
-- **Body**:
-```json
-{
-  "key": "uploads/user_123/uuid-large-video.mp4",
-  "uploadId": "string"
-}
-```
-- **Response**:
-```json
-{
-  "aborted": true
-}
-```
-
----
-
-### 7. Tạo Presigned GET URL (Tải / Xem file bảo mật)
-- **Endpoint**: `POST /api/upload/signed-download-url`
-- **Body**:
-```json
-{
-  "key": "uploads/user_123/uuid-avatar.png",
-  "expiresIn": 3600
-}
-```
-- **Response**:
-```json
-{
-  "success": true,
-  "downloadUrl": "https://vntez-bucket.<account_id>.r2.cloudflarestorage.com/uploads/...",
-  "key": "uploads/user_123/uuid-avatar.png",
-  "expiresIn": 3600
-}
-```
-
----
-
-## 🛠 Hướng dẫn phát triển & Triển khai
-
-### Cài đặt dependencies:
-```bash
-bun install
-# hoặc npm install
-```
-
-### Chạy local development:
-```bash
-bun run dev
-# hoặc npm run dev
-```
-
-### Kiểm tra kiểu TypeScript:
-```bash
-bun run typecheck
-```
-
-### Đồng bộ Cloudflare types:
-```bash
-bun run cf-typegen
-```
-
-### Deploy lên Cloudflare Workers:
-```bash
-bun run deploy
-# hoặc npm run deploy
-```
-
-### Cấu hình Secrets cho Worker (chỉ cần chạy khi đổi key):
-Tạo file json tạm chứa secret:
-```bash
-cat << 'EOF' > /tmp/secrets.json
-{
-  "R2_ACCESS_KEY_ID": "your_access_key",
-  "R2_SECRET_ACCESS_KEY": "your_secret_key"
-}
-EOF
-npx wrangler secret bulk /tmp/secrets.json
-rm -f /tmp/secrets.json
-```
+Dùng [client TypeScript cho Web](sdk/web/upload.ts) hoặc [package Dart cho Flutter](sdk/flutter). Cả hai nhận callback cấp access token, tự chọn single/multipart và hỗ trợ callback checkpoint để lưu phiên. Pass lại checkpoint cùng file gốc để resume hoặc gọi `abort` để hủy. Các client trả mã lỗi và `retryAfter` cho app quyết định lịch retry. Flutter hiện nhận `Uint8List` nên app cần nạp file vào bộ nhớ.
